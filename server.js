@@ -1,46 +1,79 @@
-const express = require('express');
-const { GoogleGenAI } = require('@google/genai');
-require('dotenv').config();
+import dotenv from 'dotenv';
+dotenv.config();
+
+import { GoogleGenAI } from '@google/genai';
+import express from 'express';
 
 const app = express();
 app.use(express.json());
 
-// Gemini AI Initialize karo
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Main Webhook Endpoint
 app.post('/webhook', async (req, res) => {
+  try {
     const event = req.headers['x-github-event'];
     console.log(`\n🔥 GitHub Event Received: ${event}`);
 
-    // Response turant 200 OK bhej do taaki GitHub waiting me na rahe
-    res.status(200).send('OK');
-
-    // Agar real code push event aaya hai
     if (event === 'push') {
-        const commitMessage = req.body.commits?.[0]?.message || 'No commit message found';
-        const pusherName = req.body.pusher?.name || 'Someone';
-        
-        console.log(`📦 Commit Detected from ${pusherName}: "${commitMessage}"`);
-        console.log(`🤖 Agentic AI is analyzing the commit message...`);
+      const repo = req.body.repository?.full_name; // e.g., "suryaaxc/repo-name"
+      const commitSha = req.body.head_commit?.id;
+      const pusher = req.body.pusher?.name || 'Unknown';
 
-        try {
-            // Gemini AI Agent ko call kar rahe hain message analyze karne ke liye
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: `A developer named ${pusherName} just pushed code with this commit message: "${commitMessage}". 
-                Act as an AI Senior Developer. Summarize what they probably changed in 1-2 bullet points and give them a quick, encouraging developer compliment. Keep it brief.`,
-            });
+      if (!repo || !commitSha) {
+        console.log('⚠️ Repository info or Commit SHA missing in payload.');
+        return res.send('Missing Data');
+      }
 
-            console.log(`\n✨ --- AI AGENT RESPONSE ---`);
-            console.log(response.text);
-            console.log(`----------------------------\n`);
+      console.log(`📦 Commit Detected from ${pusher}: ${commitSha.substring(0, 7)} in ${repo}`);
+      console.log('Fetching actual code diff from GitHub API...');
 
-        } catch (error) {
-            console.error('❌ AI Agent Analysis Failed:', error.message);
+      // GitHub API se single commit details fetch kar rahe hain
+      // Note: Agar repo private hai, toh headers me "Authorization": "token YOUR_GITHUB_TOKEN" lagana padega
+      const githubUrl = `https://api.github.com/repos/${repo}/commits/${commitSha}`;
+      
+      const githubResponse = await fetch(githubUrl, {
+        headers: {
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'Node-Webhook-Server'
         }
+      });
+
+      if (!githubResponse.ok) {
+        throw new Error(`GitHub API responded with status ${githubResponse.status}`);
+      }
+
+      const commitData = await githubResponse.json();
+      
+      // Saare files ke diffs ko ek text block me merge kar rahe hain
+      let diffData = '';
+      commitData.files?.forEach(file => {
+        diffData += `\nFile: ${file.filename}\nStatus: ${file.status}\nChanges:\n${file.patch || 'No patch available (maybe binary or large file)'}\n-------------------`;
+      });
+
+      if (!diffData || diffData.trim() === '') {
+        diffData = 'No line-by-line code changes detected.';
+      }
+
+      console.log('🤖 Agentic AI is analyzing the actual code changes...');
+
+      // Gemini 2.5 Flash ko pura code diff bhej rahe hain analysis ke liye
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: `You are a Senior Developer. Analyze the following code diff from a GitHub push event. Identify potential bugs, code smell, styling issues, or security flaws, and give a concise constructive feedback:\n\n${diffData}`,
+      });
+
+      console.log('\n✨ --- AI CODE DIFF REVIEW ---');
+      console.log(response.text);
+      console.log('------------------------------');
     }
+    
+    res.send('OK');
+  } catch (error) {
+    console.error('❌ AI Agent Diff Analysis Failed:', error.message);
+    res.status(500).send('Error');
+  }
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Webhook Server running on port ${PORT}`));
+app.listen(5000, () => {
+  console.log('🚀 Webhook Server running on port 5000');
+});
